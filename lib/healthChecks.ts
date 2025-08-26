@@ -1,6 +1,7 @@
 import { Client } from 'pg';
 import { S3Client, HeadBucketCommand } from '@aws-sdk/client-s3';
 import { SESClient, GetIdentityVerificationAttributesCommand } from '@aws-sdk/client-ses';
+import { createConnection } from 'net';
 
 export interface HealthCheckResult {
   service: string;
@@ -129,6 +130,68 @@ export async function checkSES(): Promise<HealthCheckResult> {
   }
 }
 
+// DNS/Port Connectivity Health Check
+export function checkDNSPort(hostname?: string, port?: number): Promise<HealthCheckResult> {
+  return new Promise((resolve) => {
+    const testHost = hostname || process.env.DNS_CHECK_HOST || 'google.com';
+    const testPort = port || parseInt(process.env.DNS_CHECK_PORT || '80');
+    const timeout = 5000; // 5 second timeout
+
+    const socket = createConnection({
+      host: testHost,
+      port: testPort,
+      timeout: timeout
+    });
+    
+    const timeoutId = setTimeout(() => {
+      socket.destroy();
+      resolve({
+        service: 'DNS/Port Connectivity',
+        status: 'error',
+        message: `Connection timeout to ${testHost}:${testPort}`,
+        details: {
+          hostname: testHost,
+          port: testPort,
+          timeout: `${timeout}ms`,
+          accessible: false
+        }
+      });
+    }, timeout);
+
+    socket.on('connect', () => {
+      clearTimeout(timeoutId);
+      socket.destroy();
+      resolve({
+        service: 'DNS/Port Connectivity',
+        status: 'success',
+        message: `Successfully connected to ${testHost}:${testPort}`,
+        details: {
+          hostname: testHost,
+          port: testPort,
+          accessible: true,
+          responseTime: 'Fast'
+        }
+      });
+    });
+
+    socket.on('error', (error: NodeJS.ErrnoException) => {
+      clearTimeout(timeoutId);
+      socket.destroy();
+      resolve({
+        service: 'DNS/Port Connectivity',
+        status: 'error',
+        message: `Failed to connect to ${testHost}:${testPort}: ${error.message}`,
+        details: {
+          hostname: testHost,
+          port: testPort,
+          accessible: false,
+          error: error.code || 'Unknown error'
+        }
+      });
+    });
+  });
+}
+
 // Port Health Check
 export function checkPort(): HealthCheckResult {
   const port = process.env.PORT || '3000';
@@ -151,13 +214,14 @@ export async function runAllHealthChecks(): Promise<HealthCheckResult[]> {
     checkDatabase(),
     checkS3(),
     checkSES(),
+    checkDNSPort(),
   ]);
 
   return results.map((result, index) => {
     if (result.status === 'fulfilled') {
       return result.value;
     } else {
-      const services = ['Application Port', 'PostgreSQL Database', 'AWS S3', 'AWS SES'];
+      const services = ['Application Port', 'PostgreSQL Database', 'AWS S3', 'AWS SES', 'DNS/Port Connectivity'];
       return {
         service: services[index],
         status: 'error' as const,
