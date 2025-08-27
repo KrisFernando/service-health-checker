@@ -11,7 +11,12 @@ export interface HealthCheckResult {
 }
 
 // Database Health Check
-export async function checkDatabase(): Promise<HealthCheckResult> {
+export async function checkDatabase(): Promise<HealthCheckResult | null> {
+  // Skip if required environment variables are not set
+  if (!process.env.DB_HOST || !process.env.DB_NAME || !process.env.DB_USERNAME || !process.env.DB_PASSWORD) {
+    return null;
+  }
+
   try {
     const client = new Client({
       host: process.env.DB_HOST,
@@ -52,7 +57,12 @@ export async function checkDatabase(): Promise<HealthCheckResult> {
 }
 
 // S3 Health Check
-export async function checkS3(): Promise<HealthCheckResult> {
+export async function checkS3(): Promise<HealthCheckResult | null> {
+  // Skip if required environment variables are not set
+  if (!process.env.S3_BUCKET_NAME) {
+    return null;
+  }
+
   try {
     const s3Client = new S3Client({
       region: process.env.AWS_REGION || 'us-east-1',
@@ -88,7 +98,12 @@ export async function checkS3(): Promise<HealthCheckResult> {
 }
 
 // SES Health Check
-export async function checkSES(): Promise<HealthCheckResult> {
+export async function checkSES(): Promise<HealthCheckResult | null> {
+  // Skip if required environment variables are not set
+  if (!process.env.SES_FROM_EMAIL) {
+    return null;
+  }
+
   try {
     const sesClient = new SESClient({
       region: process.env.AWS_REGION || 'us-east-1',
@@ -131,7 +146,12 @@ export async function checkSES(): Promise<HealthCheckResult> {
 }
 
 // DNS/Port Connectivity Health Check
-export function checkDNSPort(hostname?: string, port?: number): Promise<HealthCheckResult> {
+export function checkDNSPort(hostname?: string, port?: number): Promise<HealthCheckResult | null> {
+  // Skip if no hostname/port specified and no environment variables set
+  if (!hostname && !port && !process.env.DNS_CHECK_HOST && !process.env.DNS_CHECK_PORT) {
+    return Promise.resolve(null);
+  }
+
   return new Promise((resolve) => {
     const testHost = hostname || process.env.DNS_CHECK_HOST || 'google.com';
     const testPort = port || parseInt(process.env.DNS_CHECK_PORT || '80');
@@ -217,16 +237,26 @@ export async function runAllHealthChecks(): Promise<HealthCheckResult[]> {
     checkDNSPort(),
   ]);
 
-  return results.map((result, index) => {
+  // Filter out null results (skipped checks) and process the rest
+  const processedResults: HealthCheckResult[] = [];
+  
+  results.forEach((result, index) => {
+    const services = ['Application Port', 'PostgreSQL Database', 'AWS S3', 'AWS SES', 'DNS/Port Connectivity'];
+    
     if (result.status === 'fulfilled') {
-      return result.value;
+      // Only add non-null results (null means check was skipped)
+      if (result.value !== null) {
+        processedResults.push(result.value);
+      }
     } else {
-      const services = ['Application Port', 'PostgreSQL Database', 'AWS S3', 'AWS SES', 'DNS/Port Connectivity'];
-      return {
+      // Add error results
+      processedResults.push({
         service: services[index],
         status: 'error' as const,
         message: `Health check failed: ${result.reason instanceof Error ? result.reason.message : 'Unknown error'}`,
-      };
+      });
     }
   });
+
+  return processedResults;
 }
